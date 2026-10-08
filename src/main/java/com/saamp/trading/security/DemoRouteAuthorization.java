@@ -30,7 +30,7 @@ public final class DemoRouteAuthorization implements AuthorizationManager<Reques
         if (!(auth.getPrincipal() instanceof Jwt jwt)) return new AuthorizationDecision(true);
         String mode = jwt.getClaimAsString("tradingMode");
         if ("INTERNAL_DELEGATED".equals(jwt.getClaimAsString("accessMode")))
-            return new AuthorizationDecision(false);
+            return new AuthorizationDecision(DelegatedTradingContext.isValid(jwt));
         if (mode == null || mode.isBlank() || "LIVE".equalsIgnoreCase(mode.trim()))
             return new AuthorizationDecision(true);
         if (!"DEMO".equalsIgnoreCase(mode.trim())

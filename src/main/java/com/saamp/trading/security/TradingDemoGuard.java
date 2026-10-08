@@ -49,7 +49,10 @@ public class TradingDemoGuard {
         String access = jwt.getClaimAsString("accessMode");
         String identity = jwt.getClaimAsString("identityType");
         if ("INTERNAL_DELEGATED".equals(access)) {
-            throw failure("INTERNAL_DELEGATED_NOT_ENABLED", "La delegation interne n'est pas activee.");
+            if (!DelegatedTradingContext.isValid(jwt)) {
+                throw failure("INVALID_TOKEN_SCOPE", "Contexte LIVE delegue explicite requis.");
+            }
+            return TradingMode.LIVE;
         }
         if (mode == TradingMode.DEMO && (!"INTERNAL_DEMO".equals(access) || !"INTERNAL".equals(identity))) {
             throw failure("INVALID_TOKEN_SCOPE", "Contexte DEMO interne explicite requis.");

@@ -43,13 +43,14 @@ class PlatformAvailabilityServiceTest {
     }
     @Test void officialCaptureFeedsStatusAndBusinessStillRequiresItsOwnCapture() {
         doReturn(reading()).when(reader).read(any(),anyList());
+        // status() lance une probe asynchrone : son stub doit deja etre disponible.
+        doReturn(reading()).when(reader).readDiagnostic(any(),anyList());
         balances.capture(live);
         assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("TECHNICAL_CLOSURE");
         verify(reader,times(2)).read(any(),anyList());
-        doReturn(reading()).when(reader).readDiagnostic(any(),anyList());
-        assertThat(balances.probeOfficialReadiness(live)).isTrue();
-        assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN");
-        when(reader.read(any(),anyList())).thenThrow(new IllegalStateException("internal test failure"));
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).untilAsserted(()->
+                assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN"));
+        doThrow(new IllegalStateException("internal test failure")).when(reader).read(any(),anyList());
         assertThatThrownBy(()->balances.captureForOperation(live)).isInstanceOf(TradingException.class);
         // Technical readiness remains OPEN; the strict operation capture still failed closed above.
         assertThat(platform.status(live,TradingMode.LIVE).status()).isEqualTo("OPEN");
