@@ -26,10 +26,30 @@ install -m 0600 /etc/trading-api/trading-prod.env "$backup_dir/trading-prod.env"
 if sudo -u postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='trading'" | grep -qx 1; then
   sudo -u postgres pg_dump -Fc trading > "$backup_dir/trading.dump"
   chmod 0600 "$backup_dir/trading.dump"
+  pg_restore --list "$backup_dir/trading.dump" >/dev/null
+  pg_restore --file=/dev/null "$backup_dir/trading.dump"
   backup_files+=(trading.dump)
+else
+  echo "Existing trading database required; refusing release without database backup"
+  exit 2
 fi
 ( cd "$backup_dir" && sha256sum "${backup_files[@]}" > SHA256SUMS )
-systemctl stop trading-api.service 2>/dev/null || true
+if [[ -n "${TRADING_RELEASE_RESERVATION_TTL:-}" ]]; then
+  [[ "$TRADING_RELEASE_RESERVATION_TTL" == "10s" ]] || { echo "Unsupported release TTL"; exit 2; }
+fi
+systemctl stop trading-api.service
+[[ "$(systemctl show trading-api.service -p ActiveState --value)" == "inactive" ]] || { echo "Service did not stop"; exit 2; }
+if [[ "${TRADING_RELEASE_RESERVATION_TTL:-}" == "10s" ]]; then
+  # Seule cette variable non secrete est modifiee, apres sauvegarde du fichier complet.
+  python3 - <<'PY'
+from pathlib import Path
+p = Path('/etc/trading-api/trading-prod.env')
+lines = p.read_text().splitlines()
+lines = [line for line in lines if not line.startswith('TRADING_RESERVATION_TTL=')]
+lines.append('TRADING_RESERVATION_TTL=10s')
+p.write_text('\n'.join(lines) + '\n')
+PY
+fi
 install -o trading -g trading -m 0644 "$TRADING_WAR" /opt/trading-api/trading-api.war
 sha256sum /opt/trading-api/trading-api.war | grep -q "^$TRADING_WAR_SHA256 " || { echo "Installed WAR checksum mismatch"; exit 2; }
 systemctl start trading-api.service

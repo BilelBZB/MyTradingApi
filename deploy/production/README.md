@@ -1,5 +1,39 @@
 # Préparation production MyTrading
 
+## Mise a jour backend existant — unites d'affichage / preview 10 s
+
+Cette livraison utilise preflight.sh, deploy.sh, postflight.sh et rollback.sh exclusivement.
+Pas de Jenkins, aucun changement frontend. Le preflight accepte le template frontend non renseigne
+uniquement si le backend est deja actif et que le vhost installe trading.saamp.com passe nginx -t.
+Le template n'est ni copie ni applique pendant une mise a jour backend.
+
+Avant execution : comparer SHA du WAR actif et du candidat, toutes les migrations et ressources,
+verifier la destination PostgreSQL locale trading utilisee par le service, Java 21,
+les permissions du fichier env, et l'absence d'ordres inconnus non resolus.
+Les scripts sont executes en root depuis le repertoire deploy/production versionne du SHA livre.
+
+1. `APPLY_PRODUCTION_PREFLIGHT=YES TRADING_WAR=<war> TRADING_WAR_SHA256=<sha> bash preflight.sh`
+2. `APPLY_PRODUCTION_BACKUP=YES bash backup.sh` puis verifier SHA256SUMS et pg_restore --list/--file=/dev/null.
+3. `APPLY_PRODUCTION_DEPLOY=YES TRADING_WAR=<war> TRADING_WAR_SHA256=<sha> TRADING_RELEASE_RESERVATION_TTL=10s bash deploy.sh`
+4. Attendre health UP, puis `APPLY_PRODUCTION_POSTFLIGHT=YES bash postflight.sh`.
+5. Verifier TRADING_RESERVATION_TTL=10s effectif, les autres variables inchangees,
+   Liquibase 019 une fois, gate fermee, auth reelle et GET en KG/G/OZ.
+
+Le deploy sauvegarde WAR, env et PostgreSQL AVANT remplacement et verifie la lisibilite du dump.
+Une lecture pg_restore n'est pas une repetition de restauration ; conserver cette distinction dans le rapport.
+La seule modification env de cette release est TRADING_RESERVATION_TTL=10s.
+La fraicheur display est plafonnee a 10 secondes dans le code sans modifier l'execution.
+Migration 019 additive : snapshot des nouveaux previews, aucun ordre/ledger historique modifie.
+Le rollback applicatif peut conserver la table 019, ignoree par le WAR precedent.
+
+Si un controle echoue :
+`APPLY_PRODUCTION_ROLLBACK=YES TRADING_ROLLBACK_BACKUP_DIR=<backup> bash rollback.sh`,
+puis attendre health UP et lancer postflight. Aucun rollback de donnees automatique.
+Ne pas ouvrir la gate. Aucun submit financier pour le smoke ; utiliser uniquement une session
+reelle autorisee pour les lectures et, si garanti sans execution, un preview controle.
+
+Les etats de septembre ci-dessous sont historiques : toujours inspecter le serveur reel avant deploiement.
+
 Ces fichiers sont des templates locaux. Ils ne doivent pas être copiés sur un serveur ni exécutés sans une autorisation de déploiement distincte.
 
 ## État audité le 2026-09-12

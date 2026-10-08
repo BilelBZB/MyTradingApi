@@ -15,10 +15,33 @@ import java.util.Set;
 public class MarketDataRefreshService {
     private final TradingProvider provider;
     private final MarketPriceService prices;
+    private record FailedDisplayRefresh(long retryAfterNanos, RuntimeException failure) { }
+    private final java.util.Map<String,FailedDisplayRefresh> displayFailures = new java.util.LinkedHashMap<>();
 
     public MarketDataRefreshService(TradingProvider provider, MarketPriceService prices) {
         this.provider = provider;
         this.prices = prices;
+    }
+
+    /** Regroupe les demandes d'affichage concurrentes avec relecture du cache sous verrou.
+     * @param pair paire canonique @return snapshot frais @throws TradingException si le fournisseur est indisponible */
+    public synchronized MarketPrice freshForDisplay(String pair) {
+        try { return prices.requireFreshForDisplay(pair); }
+        catch (TradingException failure) {
+            if (!"MARKET_PRICE_STALE".equals(failure.getCode()) && !"MARKET_PRICE_MISSING".equals(failure.getCode())) throw failure;
+        }
+        var previous=displayFailures.get(pair);
+        if (previous!=null && System.nanoTime()<previous.retryAfterNanos()) throw previous.failure();
+        try {
+            refresh(pair);
+            var result=prices.requireFreshForDisplay(pair);
+            displayFailures.remove(pair);
+            return result;
+        } catch (RuntimeException failure) {
+            displayFailures.put(pair,new FailedDisplayRefresh(System.nanoTime()+java.time.Duration.ofSeconds(1).toNanos(),failure));
+            if (displayFailures.size()>32) displayFailures.remove(displayFailures.keySet().iterator().next());
+            throw failure;
+        }
     }
 
     /** Refreshes the required pair through the provider's pair-aware runtime path. */

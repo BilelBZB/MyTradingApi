@@ -30,7 +30,7 @@ public final class DemoRouteAuthorization implements AuthorizationManager<Reques
         if (!(auth.getPrincipal() instanceof Jwt jwt)) return new AuthorizationDecision(true);
         String mode = jwt.getClaimAsString("tradingMode");
         if ("INTERNAL_DELEGATED".equals(jwt.getClaimAsString("accessMode")))
-            return new AuthorizationDecision(false);
+            return new AuthorizationDecision(DelegatedTradingContext.isValid(jwt));
         if (mode == null || mode.isBlank() || "LIVE".equalsIgnoreCase(mode.trim()))
             return new AuthorizationDecision(true);
         if (!"DEMO".equalsIgnoreCase(mode.trim())
@@ -42,7 +42,7 @@ public final class DemoRouteAuthorization implements AuthorizationManager<Reques
         String path = request.getRequestURI().substring(request.getContextPath().length());
         boolean allowed = "GET".equals(request.getMethod()) && (READS.contains(path)
                 || path.matches(ACCOUNT + "/orders/[0-9]+"));
-        allowed |= "POST".equals(request.getMethod()) && (path.equals(ACCOUNT + "/orders/preview")
+        allowed |= "POST".equals(request.getMethod()) && (path.equals(ACCOUNT + "/orders/estimate") || path.equals(ACCOUNT + "/orders/preview")
                 || path.matches(ACCOUNT + "/orders/[0-9]+/submit"));
         return new AuthorizationDecision(allowed);
     }

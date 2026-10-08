@@ -14,6 +14,35 @@ public final class TroyWeightConverter {
     private TroyWeightConverter() {
     }
 
+    /** @param currency devise effective @param unit unite visuelle @return libelle du prix */
+    public static String priceUnit(String currency, QuantityUnit unit) {
+        return currency == null ? null : currency + "/" + unit.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** Convertit une quantite signee pour affichage, sans modifier la quantite canonique.
+     * @param ounces quantite canonique, eventuellement nulle @param unit unite d'affichage
+     * @return quantite a huit decimales, arrondie HALF_UP */
+    public static BigDecimal fromTroyOunces(BigDecimal ounces, QuantityUnit unit) {
+        if (ounces == null) return null;
+        return ounces.multiply(unitsPerOunce(unit)).setScale(8, RoundingMode.HALF_UP);
+    }
+
+    /** Convertit un prix publie par once, exclusivement pour presentation.
+     * @param pricePerOz prix canonique nullable @param unit unite d'affichage
+     * @return prix a huit decimales HALF_UP, ou prix historique intact en OZ */
+    public static BigDecimal displayPrice(BigDecimal pricePerOz, QuantityUnit unit) {
+        if (pricePerOz == null || unit == QuantityUnit.OZ) return pricePerOz;
+        return pricePerOz.divide(unitsPerOunce(unit), 8, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal unitsPerOunce(QuantityUnit unit) {
+        return switch (java.util.Objects.requireNonNull(unit)) {
+            case OZ -> BigDecimal.ONE;
+            case G -> GRAMS_PER_TROY_OUNCE;
+            case KG -> GRAMS_PER_TROY_OUNCE.movePointLeft(3);
+        };
+    }
+
     public static BigDecimal toTroyOunces(BigDecimal quantity, QuantityUnit unit) {
         if (quantity == null || unit == null || quantity.signum() <= 0) {
             throw new IllegalArgumentException("Quantity and unit are required and quantity must be positive");

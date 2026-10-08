@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import com.saamp.trading.domain.QuantityUnit;
+import org.springframework.web.bind.annotation.RequestParam;
 
 @RestController
 @RequestMapping("/api/v1/accounts/me")
@@ -59,17 +61,19 @@ public class AccountController {
      * Retourne uniquement les soldes du compte de trading de la société authentifiée.
      *
      * @param authentication identité JWT validée par Spring Security
+     * @param displayUnit unite visuelle des metaux, OZ par defaut
      * @return soldes comptables et disponibles du compte courant
      */
     @GetMapping("/balances")
     @Operation(summary = "Lire les soldes du compte courant", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
-    public List<BalanceView> balances(Authentication authentication) {
+    public List<DisplayViews.Balance> balances(Authentication authentication, @RequestParam(defaultValue="OZ") QuantityUnit displayUnit) {
         var trader = traders.current(authentication);
         var account = accounts.requireByCompany(trader.companyId(), trader.tradingMode());
         return balances.findAll(account.id(),trader.tradingMode()).stream()
                 .filter(balance -> balance.asset() == account.baseCurrency() || balance.asset().isMetal())
                 .map(balance -> BalanceView.from(balance, reservations.available(account.id(), balance.asset(), balance.quantity(),trader.tradingMode())))
+                .map(balance -> DisplayViews.balance(balance,displayUnit))
                 .toList();
     }
 
@@ -77,30 +81,33 @@ public class AccountController {
      * Valorise les positions métal du compte avec des prix client, sans exposer les données fournisseur.
      *
      * @param authentication identité JWT validée par Spring Security
+     * @param displayUnit unite visuelle ; valorisation et marge restent inchangees
      * @return positions métal valorisées du compte courant
      */
     @GetMapping("/positions")
     @Operation(summary = "Lire les positions métal valorisées", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
-    public List<PositionView> positions(Authentication authentication) {
+    public List<DisplayViews.Position> positions(Authentication authentication, @RequestParam(defaultValue="OZ") QuantityUnit displayUnit) {
         var trader = traders.current(authentication);
         var account = accounts.requireByCompany(trader.companyId(), trader.tradingMode());
-        return positions.read(account,trader.tradingMode()).stream().map(PositionView::from).toList();
+        return positions.read(account,trader.tradingMode()).stream().map(PositionView::from)
+                .map(position -> DisplayViews.position(position,account.baseCurrency(),displayUnit)).toList();
     }
 
     /**
      * Compose la synthèse du compte à partir du calcul de risque existant.
      *
      * @param authentication identité JWT validée par Spring Security
+     * @param displayUnit convention visuelle ; aucun montant financier n'est converti
      * @return indicateurs financiers du compte courant
      */
     @GetMapping("/summary")
     @Operation(summary = "Lire la synthèse financière", description = "Permissions : MYTRADING_ACCESS + MYTRADING_ACCOUNT_READ.")
     @PreAuthorize("hasAuthority('MYTRADING_ACCESS') and hasAuthority('MYTRADING_ACCOUNT_READ')")
-    public AccountSummaryView summary(Authentication authentication) {
+    public DisplayViews.Summary summary(Authentication authentication, @RequestParam(defaultValue="OZ") QuantityUnit displayUnit) {
         var trader = traders.current(authentication);
         var account = accounts.requireByCompany(trader.companyId(), trader.tradingMode());
-        return new AccountSummaryView(account.id(), account.baseCurrency(), account.status(), account.dealLimit(),
-                account.positionLimit(), RiskSummaryView.from(risk.computeAndStore(account,trader.tradingMode())));
+        return new DisplayViews.Summary(new AccountSummaryView(account.id(), account.baseCurrency(), account.status(), account.dealLimit(),
+                account.positionLimit(), RiskSummaryView.from(risk.computeAndStore(account,trader.tradingMode()))),displayUnit);
     }
 }
