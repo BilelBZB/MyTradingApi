@@ -56,8 +56,11 @@ public class PricingService {
                     maxAge == null ? marketPrices.requireFreshForDisplay(pair) : marketPrices.requireFresh(pair, maxAge);
         } catch (TradingException staleOrMissing) {
             if (execution || !("MARKET_PRICE_STALE".equals(staleOrMissing.getCode()) || "MARKET_PRICE_MISSING".equals(staleOrMissing.getCode()))) throw staleOrMissing;
-            refresh.refresh(pair);
-            market = maxAge == null ? marketPrices.requireFreshForDisplay(pair) : marketPrices.requireFresh(pair, maxAge);
+            if (maxAge == null) market = refresh.freshForDisplay(pair);
+            else {
+                refresh.refresh(pair);
+                market = marketPrices.requireFresh(pair, maxAge);
+            }
         }
         if (!pair.equals(market.pair())) throw new TradingException(HttpStatus.CONFLICT,"QUOTE_PAIR_MISMATCH","Paire de cotation incoherente");
         SpreadConfig spread = repository.findCurrentSpread(companyId, metal, OffsetDateTime.now())

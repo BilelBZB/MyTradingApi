@@ -14,6 +14,21 @@ public class OrderRepository {
     private final JdbcTemplate jdbc;
     public OrderRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
+    /** Persiste le resultat initial dans la transaction du brouillon et des reservations.
+     * @param preview valeurs initiales immuables */
+    public void savePreview(OrderPreviewResponse preview) {
+        jdbc.update("INSERT INTO trading_order_preview_snapshot(order_id,price_as_of,expires_at,reserved_cash,reserved_metal,estimated_amount) VALUES (?,?,?,?,?,?)",
+                preview.orderId(),preview.priceAsOf(),preview.expiresAt(),preview.reservedCash(),preview.reservedMetal(),preview.estimatedAmount());
+    }
+
+    /** @param order ordre appartenant au client @return snapshot initial, sans cotation ni extension de delai */
+    public Optional<OrderPreviewResponse> findPreview(TradingOrder order) {
+        return jdbc.query("SELECT * FROM trading_order_preview_snapshot WHERE order_id=?",(rs,n)->
+                new OrderPreviewResponse(order.id(),order.asset(),order.side(),order.quantityOz(),order.pair(),order.indicativeClientPrice(),
+                        rs.getObject("price_as_of",java.time.OffsetDateTime.class),rs.getObject("expires_at",java.time.OffsetDateTime.class),
+                        rs.getBigDecimal("reserved_cash"),rs.getBigDecimal("reserved_metal"),order.requestedQuantity(),order.requestedUnit(),rs.getBigDecimal("estimated_amount")),order.id()).stream().findFirst();
+    }
+
     public long insertDraft(long accountId, long companyId, Asset asset, String pair, OrderSide side,
                             java.math.BigDecimal requestedQty, QuantityUnit requestedUnit, java.math.BigDecimal qtyOz,
                             java.math.BigDecimal indicativeMarket, java.math.BigDecimal indicativeClientRaw,

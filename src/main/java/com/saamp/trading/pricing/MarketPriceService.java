@@ -27,7 +27,8 @@ public class MarketPriceService {
     }
 
     public MarketPrice requireFreshForDisplay(String pair) {
-        return requireFresh(pair, properties.getPricing().getDisplayMaxAge());
+        Duration configured=properties.getPricing().getDisplayMaxAge();
+        return requireFresh(pair, configured.compareTo(Duration.ofSeconds(10))>0 ? Duration.ofSeconds(10) : configured);
     }
 
     /**

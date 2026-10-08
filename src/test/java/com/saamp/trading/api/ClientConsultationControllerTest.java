@@ -242,7 +242,7 @@ class ClientConsultationControllerTest {
 
         var json = objectMapper.readTree(response);
         assertThat(json.propertyStream().map(java.util.Map.Entry::getKey).toList())
-                .containsExactlyInAnyOrder("accountId", "baseCurrency", "status", "dealLimit", "positionLimit", "risk");
+                .containsExactlyInAnyOrder("accountId", "baseCurrency", "status", "dealLimit", "positionLimit", "risk", "displayUnit");
         assertThat(json.get("risk").propertyStream().map(java.util.Map.Entry::getKey).toList())
                 .containsExactlyInAnyOrder("totalFunds", "positionValuation", "netEquity", "marginRequirement",
                         "freeEquity", "grossPosition", "coveragePct", "riskStatus");
@@ -336,7 +336,8 @@ class ClientConsultationControllerTest {
         var json = objectMapper.readTree(response);
         assertThat(json.propertyStream().map(java.util.Map.Entry::getKey).toList())
                 .containsExactlyInAnyOrder("orderId", "asset", "side", "quantityOz", "pair",
-                        "indicativeClientPrice", "priceAsOf", "expiresAt", "reservedCash", "reservedMetal");
+                        "indicativeClientPrice", "priceAsOf", "expiresAt", "reservedCash", "reservedMetal",
+                        "requestedQuantity","requestedUnit","estimatedAmount","displayPair","displayUnit","displayQuantity","displayClientPrice","priceUnit");
     }
 
     @Test
@@ -527,7 +528,8 @@ class ClientConsultationControllerTest {
         assertThat(summary.get("grossPosition").decimalValue()).isEqualByComparingTo(line.get("valuation").decimalValue().abs());
         assertThat(summary.get("marginRequirement").decimalValue()).isEqualByComparingTo(line.get("marginRequirement").decimalValue());
         assertThat(line.propertyStream().map(java.util.Map.Entry::getKey).toList()).containsExactlyInAnyOrder(
-                "asset","quantityOz","clientPrice","valuation","priceAsOf","marginRatePct","marginRequirement");
+                "asset","quantityOz","clientPrice","valuation","priceAsOf","marginRatePct","marginRequirement",
+                "pair","displayUnit","displayQuantity","displayClientPrice","priceUnit");
     }
 
     @Test

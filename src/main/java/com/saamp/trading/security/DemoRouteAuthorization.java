@@ -42,7 +42,7 @@ public final class DemoRouteAuthorization implements AuthorizationManager<Reques
         String path = request.getRequestURI().substring(request.getContextPath().length());
         boolean allowed = "GET".equals(request.getMethod()) && (READS.contains(path)
                 || path.matches(ACCOUNT + "/orders/[0-9]+"));
-        allowed |= "POST".equals(request.getMethod()) && (path.equals(ACCOUNT + "/orders/preview")
+        allowed |= "POST".equals(request.getMethod()) && (path.equals(ACCOUNT + "/orders/estimate") || path.equals(ACCOUNT + "/orders/preview")
                 || path.matches(ACCOUNT + "/orders/[0-9]+/submit"));
         return new AuthorizationDecision(allowed);
     }

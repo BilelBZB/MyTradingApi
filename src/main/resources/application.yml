@@ -49,10 +49,10 @@ trading:
     jwk-set-uri: ${MYPORTAL_JWKS_URI:https://myportal.saamp.com/.well-known/jwks.json}
   pricing:
     execution-max-age: ${TRADING_PRICE_EXECUTION_MAX_AGE:30s}
-    display-max-age: ${TRADING_PRICE_DISPLAY_MAX_AGE:5m}
+    display-max-age: ${TRADING_PRICE_DISPLAY_MAX_AGE:10s}
     default-drift-tolerance: ${TRADING_PRICE_DRIFT_TOLERANCE:0.002000}
   reservations:
-    ttl: ${TRADING_RESERVATION_TTL:2m}
+    ttl: ${TRADING_RESERVATION_TTL:10s}
     expiry-scan-delay: ${TRADING_RESERVATION_EXPIRY_SCAN_DELAY:30s}
   reconciliation:
     enabled: ${TRADING_RECONCILIATION_ENABLED:false}

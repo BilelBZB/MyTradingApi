@@ -33,6 +33,24 @@ public class OrderExecutionService {
     private final TransactionTemplate transactions;
     private final TradingDemoGuard demoGuard;
 
+    /** Estime uniquement l'affichage avant cotation ; aucun brouillon, engagement ou appel d'execution.
+     * @param companyId societe authentifiee @param request intention @param mode mode authentifie
+     * @param displayUnit unite visuelle @return montant indicatif backend
+     * @throws TradingException si compte, quantite ou cotation invalide */
+    public OrderEstimateResponse estimate(long companyId,OrderEstimateRequest request,TradingMode mode,QuantityUnit displayUnit) {
+        var account=accountForCompany(companyId);
+        AccountService.requireMode(account,mode);
+        ensureTradingAllowed(account);
+        var quantity=TroyWeightConverter.toTroyOunces(request.quantity(),request.unit());
+        config(request.asset(),quantity);
+        var quote=pricing.quoteForDisplay(companyId,request.asset(),account.baseCurrency());
+        var price=request.side()==OrderSide.BUY?quote.clientBuyPrice():quote.clientSellPrice();
+        return new OrderEstimateResponse(request.asset(),request.asset()+"-"+account.baseCurrency(),request.side(),
+                request.quantity(),request.unit(),quantity,displayUnit,TroyWeightConverter.fromTroyOunces(quantity,displayUnit),
+                TroyWeightConverter.displayPrice(price,displayUnit),TroyWeightConverter.priceUnit(account.baseCurrency().name(),displayUnit),
+                quantity.multiply(price).setScale(2,java.math.RoundingMode.HALF_UP),quote.priceAsOf());
+    }
+
     /**
      * Réunit le contrôle local et le fournisseur en conservant deux phases séparées.
      *
@@ -96,9 +114,9 @@ public class OrderExecutionService {
         TradingAccount account=accountForCompany(companyId);
         AccountService.requireMode(account,mode);
         ensureTradingAllowed(account);
-        var balanceSnapshot=balances.captureForOperation(account,mode);
         var existing=orders.findByIdempotencyKey(request.idempotencyKey());
         if (existing.isPresent()) { ensureOwnership(existing.get(),companyId); ensureMode(existing.get(),mode); return replay(existing.get()); }
+        var balanceSnapshot=balances.captureForOperation(account,mode);
         BigDecimal qty=TroyWeightConverter.toTroyOunces(request.quantity(),request.unit());
         var quotes=quotes(account,request.asset(),false,balances.forOperation(balanceSnapshot),mode);
         var limitQuotes=account.positionLimit()==null?quotes:quotes(account,request.asset(),true,balances.forOperation(balanceSnapshot),mode);
@@ -125,8 +143,11 @@ public class OrderExecutionService {
             var order=orders.lockById(id).orElseThrow();
             var expiry=order.createdAt().plus(properties.getReservations().getTtl());
             var admission=capacity.reserve(locked,order,quotes,limitQuotes,config,expiry,false,balanceSnapshot);
-            return new OrderPreviewResponse(id,request.asset(),request.side(),qty,quote.pair(),indicative,
-                    quote.priceAsOf(),expiry,admission.cash(),admission.close());
+            var preview = new OrderPreviewResponse(id,request.asset(),request.side(),qty,quote.pair(),indicative,
+                    quote.priceAsOf(),expiry,admission.cash(),admission.close(),request.quantity(),request.unit(),
+                    qty.multiply(indicative).setScale(2,java.math.RoundingMode.HALF_UP));
+            orders.savePreview(preview);
+            return orders.findPreview(order).orElseThrow();
         });
     }
 
@@ -237,11 +258,12 @@ public class OrderExecutionService {
         return config;
     }
     private OrderPreviewResponse replay(TradingOrder order) {
-        return new OrderPreviewResponse(order.id(),order.asset(),order.side(),order.quantityOz(),order.pair(),
-                order.indicativeClientPrice(),order.createdAt(),expiry(order),BigDecimal.ZERO,BigDecimal.ZERO);
+        return orders.findPreview(order).orElseThrow(()->failure("PREVIEW_SNAPSHOT_UNAVAILABLE",
+                "Ancienne cotation sans snapshot : demander une nouvelle cotation avec une nouvelle cle.",HttpStatus.CONFLICT));
     }
     private OffsetDateTime expiry(TradingOrder order) {
-        return reservationRepository.findEarliestExpiryForOrder(order.id()).orElse(order.createdAt().plus(properties.getReservations().getTtl()));
+        return orders.findPreview(order).map(OrderPreviewResponse::expiresAt)
+                .orElseGet(()->reservationRepository.findEarliestExpiryForOrder(order.id()).orElse(order.createdAt().plus(properties.getReservations().getTtl())));
     }
     private boolean transmitted(TradingOrder order) {
         return order.status()==OrderStatus.PENDING || order.status()==OrderStatus.PENDING_UNKNOWN || order.status()==OrderStatus.FILLED;

@@ -314,6 +314,164 @@ class SimulatedTradingEndToEndTest {
         return previewResponse(side, quantity, suffix).get("orderId").asLong();
     }
 
+    @Test
+    void estimateDoesNotCreateAnOrderOrReservationAndRejectsUnknownUnit() throws Exception {
+        JsonNode first=null;
+        for(String unit:java.util.List.of("KG","G","OZ")) {
+            var response=json.readTree(mvc.perform(post("/api/v1/accounts/me/orders/estimate").param("displayUnit",unit)
+                    .with(jwtFor(ORDER_WRITE)).contentType("application/json")
+                    .content("{\"asset\":\"XAU\",\"side\":\"BUY\",\"quantity\":1,\"unit\":\"G\"}"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            if(first!=null) assertThat(response.get("estimatedAmount")).isEqualTo(first.get("estimatedAmount"));
+            first=response;
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM trading_order WHERE account_id=?",Integer.class,accountId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM trading_reservation WHERE account_id=?",Integer.class,accountId)).isZero();
+        assertThat(provider.submissions()).isZero();
+        getWithPermissions("/api/v1/accounts/me/positions?displayUnit=LB",ACCOUNT_READ).andExpect(status().isBadRequest());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"EUR","USD"})
+    void pricesUseAccountCurrencyAndServerConversion(String currency) throws Exception {
+        jdbc.update("UPDATE trading_account SET base_currency=? WHERE id=?",currency,accountId);
+        String pair="XAU"+currency;
+        jdbc.update("INSERT INTO trading_market_price(pair,bid,ask,mid,price_as_of,source) VALUES (?,99,100,99.5,NOW(),'TEST') ON CONFLICT(pair) DO UPDATE SET bid=99,ask=100,mid=99.5,price_as_of=NOW()",pair);
+        var canonical=json.readTree(getWithPermissions("/api/v1/accounts/me/prices?assets=XAU",ACCOUNT_READ)
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get(0);
+        for(var unit:com.saamp.trading.domain.QuantityUnit.values()) {
+            var row=json.readTree(getWithPermissions("/api/v1/accounts/me/prices?assets=XAU&displayUnit="+unit,ACCOUNT_READ)
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get(0);
+            assertThat(row.get("displayPair").asText()).isEqualTo("XAU-"+currency);
+            assertThat(row.get("buyPrice").decimalValue()).isEqualByComparingTo(com.saamp.trading.common.TroyWeightConverter.displayPrice(canonical.get("buyPrice").decimalValue(),unit));
+            assertThat(row.get("sellPrice").decimalValue()).isEqualByComparingTo(com.saamp.trading.common.TroyWeightConverter.displayPrice(canonical.get("sellPrice").decimalValue(),unit));
+        }
+        getWithPermissions("/api/v1/accounts/me/prices?assets=EUR,USD",ACCOUNT_READ).andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(0)));
+    }
+
+    @Test
+    void fourMetalPreviewsKeepIndependentExpiryAndPartialResultsWithoutRetry() throws Exception {
+        var ids=new java.util.ArrayList<Long>();
+        for(String metal:java.util.List.of("XAU","XAG","XPT","XPD")) {
+            jdbc.update("INSERT INTO trading_market_price(pair,bid,ask,mid,price_as_of,source) VALUES (?,99,100,99.5,NOW(),'TEST') ON CONFLICT(pair) DO UPDATE SET bid=99,ask=100,mid=99.5,price_as_of=NOW()",metal+"EUR");
+            jdbc.update("INSERT INTO trading_spread(company_id,asset,spread_buy,spread_sell,config_version) VALUES (?,?,0.01,0.01,2)",companyId,metal);
+            var response=json.readTree(mvc.perform(post("/api/v1/accounts/me/orders/preview").with(jwtFor(ORDER_WRITE)).contentType("application/json")
+                    .content("{\"asset\":\""+metal+"\",\"side\":\"BUY\",\"quantity\":1,\"unit\":\"OZ\",\"idempotencyKey\":\""+key(metal)+"\"}"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            ids.add(response.get("orderId").asLong());
+        }
+        jdbc.update("UPDATE trading_order_preview_snapshot SET expires_at=NOW()-INTERVAL '1 second' WHERE order_id=?",ids.get(0));
+        submit(ids.get(0)).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("RESERVATION_EXPIRED"));
+        submit(ids.get(1)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FILLED"));
+        submit(ids.get(1)).andExpect(status().isOk());
+        assertThat(provider.submissions()).isEqualTo(1);
+        assertThat(orders.findById(ids.get(2)).orElseThrow().status()).isEqualTo(OrderStatus.DRAFT);
+        assertThat(orders.findById(ids.get(3)).orElseThrow().status()).isEqualTo(OrderStatus.DRAFT);
+    }
+
+    @Test
+    void openApiDocumentsDisplayUnitAndUnwrappedPreview() throws Exception {
+        var document=json.readTree(mvc.perform(get("/v3/api-docs")).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString());
+        var operation=document.path("paths").path("/api/v1/accounts/me/orders/preview").path("post");
+        boolean found=false;
+        for(var parameter:operation.path("parameters")) if("displayUnit".equals(parameter.path("name").asText())) {
+            found=true;
+            assertThat(parameter.path("schema").path("default").asText()).isEqualTo("OZ");
+            assertThat(parameter.path("schema").path("enum").toString()).contains("KG","G","OZ");
+        }
+        assertThat(found).isTrue();
+        String ref=operation.path("responses").path("200").path("content").path("*/*").path("schema").path("$ref").asText();
+        var schema=document.at(ref.substring(1)).path("properties");
+        assertThat(schema.has("orderId")).isTrue();
+        assertThat(schema.has("expiresAt")).isTrue();
+        assertThat(schema.has("estimatedAmount")).isTrue();
+        assertThat(schema.has("displayClientPrice")).isTrue();
+    }
+
+    @Test
+    void statementConvertsMetalsOnlyAndHistoryDoesNotUseCurrentPrice() throws Exception {
+        long id=preview("BUY","1","history-price");
+        submit(id).andExpect(status().isOk());
+        var before=getWithPermissions("/api/v1/accounts/me/orders/"+id+"?displayUnit=KG",HISTORY_READ)
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        setMarketPrice("999","1000");
+        assertThat(getWithPermissions("/api/v1/accounts/me/orders/"+id+"?displayUnit=KG",HISTORY_READ)
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).isEqualTo(before);
+        for(String unit:java.util.List.of("KG","G","OZ")) {
+            var response=json.readTree(getWithPermissions("/api/v1/accounts/me/statement?displayUnit="+unit,HISTORY_READ)
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            for(var line:response.path("lines")) {
+                var delta=line.path("delta").decimalValue();
+                if("EUR".equals(line.path("asset").asText())) {
+                    assertThat(line.path("displayUnit").isNull()).isTrue();
+                    assertThat(line.path("displayDelta").decimalValue()).isEqualByComparingTo(delta);
+                } else {
+                    assertThat(line.path("displayDelta").decimalValue()).isEqualByComparingTo(
+                            com.saamp.trading.common.TroyWeightConverter.fromTroyOunces(delta,com.saamp.trading.domain.QuantityUnit.valueOf(unit)));
+                }
+            }
+        }
+    }
+
+    @Test
+    void globalDisplayUnitNeverChangesRiskOrCanonicalHistory() throws Exception {
+        var baseline=json.readTree(getWithPermissions("/api/v1/accounts/me/summary",ACCOUNT_READ).andReturn().getResponse().getContentAsString()).get("risk");
+        for(String unit:java.util.List.of("KG","G","OZ")) {
+            var summary=json.readTree(getWithPermissions("/api/v1/accounts/me/summary?displayUnit="+unit,ACCOUNT_READ)
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get("risk");
+            for(String field:java.util.List.of("totalFunds","positionValuation","netEquity","marginRequirement","freeEquity","grossPosition"))
+                assertThat(summary.get(field)).as(field).isEqualTo(baseline.get(field));
+            getWithPermissions("/api/v1/accounts/me/positions?displayUnit="+unit,ACCOUNT_READ)
+                    .andExpect(status().isOk()).andExpect(jsonPath("$[0].quantityOz").value(100))
+                    .andExpect(jsonPath("$[0].displayUnit").value(unit));
+            var balancesJson=json.readTree(getWithPermissions("/api/v1/accounts/me/balances?displayUnit="+unit,ACCOUNT_READ)
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            for(var row:balancesJson) if ("EUR".equals(row.get("asset").asText())) {
+                assertThat(row.get("displayUnit").isNull()).isTrue();
+                assertThat(row.get("displayQuantity").decimalValue()).isEqualByComparingTo(row.get("balance").decimalValue());
+            }
+        }
+    }
+
+    @Test
+    void previewReplayRetainsSnapshotAndExpiresAfterTenSeconds() throws Exception {
+        var first=previewResponse("BUY","1","snapshot");
+        long id=first.get("orderId").asLong();
+        var persisted=orders.findById(id).orElseThrow();
+        assertThat(OffsetDateTime.parse(first.get("expiresAt").asText()))
+                .isEqualTo(persisted.createdAt().plusSeconds(10));
+        setMarketPrice("199","200");
+        var replay=previewResponse("BUY","1","snapshot");
+        assertThat(replay).isEqualTo(first);
+        assertThat(provider.submissions()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM trading_order_preview_snapshot WHERE order_id=?",Integer.class,id)).isEqualTo(1);
+        // Horloge du scenario : expiration persistante deja passee, sans attendre en temps reel.
+        jdbc.update("UPDATE trading_order_preview_snapshot SET expires_at=NOW()-INTERVAL '1 second' WHERE order_id=?",id);
+        submit(id).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("RESERVATION_EXPIRED"));
+        assertThat(provider.submissions()).isZero();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"BUY,G", "SELL,G", "BUY,KG", "SELL,KG", "BUY,OZ", "SELL,OZ"})
+    void previewProvidesBackendAmountAndPreservesRequestedUnit(String side,String unit) throws Exception {
+        String body="{\"asset\":\"XAU\",\"side\":\""+side+"\",\"quantity\":1,\"unit\":\""+unit+"\",\"idempotencyKey\":\""+key("units")+"\"}";
+        var result=json.readTree(mvc.perform(post("/api/v1/accounts/me/orders/preview").param("displayUnit",unit)
+                .with(jwtFor(ORDER_WRITE)).contentType("application/json").content(body))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(result.get("requestedQuantity").decimalValue()).isEqualByComparingTo("1");
+        assertThat(result.get("requestedUnit").asText()).isEqualTo(unit);
+        assertThat(result.get("priceUnit").asText()).isEqualTo("EUR/"+unit.toLowerCase(java.util.Locale.ROOT));
+        assertThat(result.get("estimatedAmount").decimalValue()).isEqualByComparingTo(result.get("quantityOz").decimalValue()
+                .multiply(result.get("indicativeClientPrice").decimalValue()).setScale(2,java.math.RoundingMode.HALF_UP));
+        long id=result.get("orderId").asLong();
+        for(String display:java.util.List.of("KG","G","OZ")) {
+            getWithPermissions("/api/v1/accounts/me/orders/"+id+"?displayUnit="+display,HISTORY_READ)
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.requestedUnit").value(unit))
+                    .andExpect(jsonPath("$.displayUnit").value(display));
+        }
+    }
+
     private JsonNode previewResponse(String side, String quantity, String suffix) throws Exception {
         String body = mvc.perform(post("/api/v1/accounts/me/orders/preview")
                         .with(jwtFor(ORDER_WRITE)).contentType("application/json")

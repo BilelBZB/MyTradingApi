@@ -41,7 +41,7 @@ public class TradingProperties {
 
     public static class Pricing {
         private Duration executionMaxAge = Duration.ofSeconds(30);
-        private Duration displayMaxAge = Duration.ofMinutes(5);
+        private Duration displayMaxAge = Duration.ofSeconds(10);
         private BigDecimal defaultDriftTolerance = new BigDecimal("0.002000");
         public Duration getExecutionMaxAge() { return executionMaxAge; }
         public void setExecutionMaxAge(Duration executionMaxAge) { this.executionMaxAge = executionMaxAge; }
@@ -52,7 +52,7 @@ public class TradingProperties {
     }
 
     public static class Reservations {
-        private Duration ttl = Duration.ofMinutes(2);
+        private Duration ttl = Duration.ofSeconds(10);
         private Duration expiryScanDelay = Duration.ofSeconds(30);
         public Duration getTtl() { return ttl; }
         public void setTtl(Duration ttl) { this.ttl = ttl; }

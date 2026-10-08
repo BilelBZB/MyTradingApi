@@ -1,5 +1,96 @@
 # Contrat HTTP V1 — Front MyTrading
 
+## Evolution UX — 8 octobre 2026 (prioritaire sur les exemples historiques ci-dessous)
+
+`displayUnit=KG|G|OZ` est optionnel sur balances, positions, summary, prices, orders,
+orders/{id}, statement, orders/estimate, orders/preview et orders/{id}/submit.
+Defaut : **OZ**, conforme au contrat historique. Une valeur inconnue retourne 400.
+Ce parametre ne change jamais l'intention `quantity`/`unit` du body, ni risque,
+capacite, admission, marge, valorisation, montant ou precision de stockage.
+1 OZ troy = 31.1034768 g. Conversions d'affichage : BigDecimal, 8 decimales HALF_UP.
+La conversion d'intention vers OZ reste a 6 decimales HALF_UP, sans changement.
+
+| Route | Nouveaux champs / comportement |
+|---|---|
+| GET balances | `displayQuantity`, `displayAvailable`, `displayUnit`; devises inchangees, unite null |
+| GET positions | `pair` (XAU-USD/EUR), `displayQuantity`, `displayClientPrice`, `displayUnit`, `priceUnit` |
+| GET summary | `displayUnit`; tous les montants de `risk` restent strictement identiques |
+| GET prices | `buyPrice`/`sellPrice` dans l'unite demandee ; `displayPair`, `displayUnit`, `priceUnit`, `buyDirection`, `sellDirection` |
+| POST orders/estimate | Estimation sans brouillon ni reservation, body asset/side/quantity/unit |
+| POST orders/preview | `requestedQuantity`, `requestedUnit`, `estimatedAmount`, `displayQuantity`, `displayClientPrice`, `displayPair`, `displayUnit`, `priceUnit` |
+| GET orders, GET orders/{id}, POST submit | `displayQuantity`, `displayClientPrice`, `displayIndicativeClientPrice`, `displayPair`, `displayUnit`, `priceUnit` |
+| GET statement | par ligne `displayDelta`, `displayBalanceAfter`, `displayUnit`; devises inchangees |
+
+Les champs historiques `quantityOz`, `clientPrice`, `indicativeClientPrice`, `balance`,
+`available`, `delta`, `balanceAfter` restent canoniques. Utiliser les nouveaux champs
+`display*` pour l'affichage. Seule la route prices applique directement displayUnit
+a buyPrice/sellPrice, avec OZ par defaut. `priceUnit` qualifie les **prix d'affichage**.
+La paire historique compacte est preservee ; afficher `displayPair` sur prices/ordres/preview.
+Le frontend ne doit reconstruire ni paire, ni prix unitaire, ni montant.
+
+### Parcours UX
+
+- Marches est la page d'ouverture : seulement XAU, XAG, XPT, XPD contre la devise du compte.
+  Aucun FX expose. Polling HTTP environ 10 secondes, aucun WebSocket.
+- Prix indicatifs : BUY = « J'achete », SELL = « Je vends », du point de vue du client.
+  Ne pas afficher « SAAMP achete/vend » sous les boutons.
+- `UP` = vert, `DOWN` = rouge, `UNCHANGED` = neutre. Les deux cotes sont independants.
+  Premiere observation, redemarrage ou eviction du cache : neutre. La memoire serveur
+  est par societe/paire, bornee a 4096 entrees, locale a l'instance ; elle ne pilote aucun calcul financier.
+- L'affichage refuse les prix de plus de 10 secondes (ou moins si configure).
+  Rafraichissement a la demande, regroupe sous verrou avec relecture du cache ;
+  echec fournisseur temporise une seconde, sans servir de prix perime.
+- Compte : **un ecran avec deux onglets Positions et Summary**. Ne pas afficher Position Limit ;
+  son champ et ses controles backend restent presents. Aucun nouveau champ Overmargin.
+- Ordre : **un ecran, deux etats**. Etat A : estimation via `POST orders/estimate`, sans idempotencyKey,
+  sans reservation, sans promesse d'admission. Bouton « Demander une cotation » = preview.
+- Etat B : rester sur l'ecran ; utiliser `displayClientPrice`, `estimatedAmount` et `expiresAt`
+  du preview. Fenetre serveur 10 secondes, bouton « Accepter » uniquement avant expiresAt.
+  Le prix du preview est fige pour l'affichage ; le controle de derive au submit reste actif.
+  Cela ne transforme pas le spot fournisseur en prix d'execution garanti.
+- Expiration : `RESERVATION_EXPIRED`. Derive : `PRICE_MOVED`. Dans les deux cas nouvelle cotation
+  avec nouvelle idempotencyKey ; aucun ancien ordre reutilise automatiquement.
+- PENDING/PENDING_UNKNOWN : polling GET orders/{id}, jamais retransmission automatique.
+  Jusqu'a quatre ordres peuvent etre pilotes independamment ; pas d'atomicite entre metaux,
+  chaque preview a sa propre expiration et chaque submit son propre resultat.
+
+### Exemple prices (G, compte USD)
+
+```json
+{"asset":"XAG","pair":"XAGUSD","displayPair":"XAG-USD","displayUnit":"G",
+ "buyPrice":1.00000001,"sellPrice":0.99678493,"priceUnit":"USD/g",
+ "priceAsOf":"2026-10-08T12:00:00Z","buyDirection":"UP","sellDirection":"DOWN"}
+```
+
+### Exemple preview (intention 1 OZ, affichage G)
+
+```json
+{"orderId":71,"asset":"XAG","pair":"XAGUSD","displayPair":"XAG-USD","side":"BUY",
+ "requestedQuantity":1.000000,"requestedUnit":"OZ","quantityOz":1.000000,
+ "displayQuantity":31.10347680,"displayUnit":"G","indicativeClientPrice":31.103477,
+ "displayClientPrice":1.00000001,"priceUnit":"USD/g","estimatedAmount":31.10,
+ "priceAsOf":"2026-10-08T12:00:00Z","expiresAt":"2026-10-08T12:00:10Z",
+ "reservedCash":31.20,"reservedMetal":0}
+```
+
+Montant estime = quantityOz canonique × prix client indicatif publie, arrondi monetaire
+historique a 2 decimales HALF_UP. Les reservations incluent les regles d'admission existantes
+et ne sont pas necessairement egales a ce montant. Ne jamais recalculer ce montant a partir
+des nombres d'affichage arrondis.
+
+### Replay et migration
+
+Le snapshot initial est persiste atomiquement avec le brouillon et les reservations (migration 019).
+Le replay rend exactement ce snapshot, sans nouvelle lecture de cotation/solde, sans prolongation.
+Les montants reserves sont ceux du preview initial, pas une assertion sur leur statut actuel.
+Un ancien ordre anterieur a 019 n'a pas de priceAsOf reconstructible : replay refuse avec
+`409 PREVIEW_SNAPSHOT_UNAVAILABLE`, demander un nouveau preview avec une nouvelle cle.
+Le polling historique et le traitement des ordres deja transmis restent inchanges.
+
+Summary preserve : Total Funds + Position Valuation = Net Equity ; Net Equity - Margin Requirement
+= Free Equity. Margin % correspond au champ existant coveragePct, pas au taux de marge d'un metal.
+Gross Position conserve sa definition monetaire existante et n'est pas converti en poids.
+
 Ce document décrit uniquement le contrat effectivement exposé par l'API au 4 septembre 2026. Les URI ci-dessous sont relatives au contexte applicatif `/trading-api` ; par exemple, l'URL déployée du compte courant se termine par `/trading-api/api/v1/accounts/me`.
 
 ## Conventions communes

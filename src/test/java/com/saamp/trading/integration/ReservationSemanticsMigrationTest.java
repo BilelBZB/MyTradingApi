@@ -10,6 +10,29 @@ import static org.assertj.core.api.Assertions.*;
 
 /** VÃ©rifie la bascule 010 vers 011 sans modifier les changesets ni les engagements historiques. */
 class ReservationSemanticsMigrationTest {
+    @Test void previewSnapshotUpgradeFrom018PreservesHistoricalOrdersAndIsAppliedOnce() throws Exception {
+        try (var fixture=new Schema()) {
+            migrateCount(fixture.connection,fixture.name,18);
+            fixture.jdbc.update("INSERT INTO trading_account(id,company_id,base_currency,status) VALUES (1,1,'EUR','ACTIVE')");
+            fixture.jdbc.update("""
+                    INSERT INTO trading_order(id,account_id,company_id,asset,pair,side,requested_quantity,requested_unit,quantity_oz,status,idempotency_key,cl_ord_id)
+                    VALUES (1,1,1,'XAU','XAUEUR','BUY',1,'OZ',1,'FILLED','HISTORICAL','HISTORICAL')
+                    """);
+            var before=fixture.jdbc.queryForList("SELECT * FROM trading_order");
+            var checksums=fixture.jdbc.queryForList("SELECT id,md5sum FROM databasechangelog ORDER BY orderexecuted");
+            migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
+            migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
+            assertThat(fixture.jdbc.queryForList("SELECT * FROM trading_order")).isEqualTo(before);
+            assertThat(fixture.jdbc.queryForList("SELECT id,md5sum FROM databasechangelog ORDER BY orderexecuted LIMIT 18")).isEqualTo(checksums);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE id='019-order-preview-snapshot'",Integer.class)).isEqualTo(1);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM trading_order_preview_snapshot",Integer.class)).isZero();
+            fixture.jdbc.update("INSERT INTO trading_order_preview_snapshot VALUES (1,NOW(),NOW()+INTERVAL '10 seconds',1,0,100)");
+            assertThatThrownBy(()->fixture.jdbc.update("INSERT INTO trading_order_preview_snapshot VALUES (1,NOW(),NOW(),1,0,100)"))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+            assertThatThrownBy(()->fixture.jdbc.update("INSERT INTO trading_order_preview_snapshot VALUES (999,NOW(),NOW(),1,0,100)"))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        }
+    }
     @Test void backfillPreservesPendingCommitmentsAndAddsExplicitUniqueKinds() throws Exception {
         try (var fixture=new Schema()) {
             var connection=fixture.connection;
@@ -58,7 +81,7 @@ class ReservationSemanticsMigrationTest {
     @Test void completeInstallationUsesTheRealMasterThrough016() throws Exception {
         try (var fixture=new Schema()) {
             migrate(fixture.source,fixture.name,"db.changelog-master.yaml");
-            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(18);
+            assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE exectype='EXECUTED'",Integer.class)).isEqualTo(19);
             assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='trading_reservation' AND column_name='reservation_kind' AND is_nullable='NO'",Integer.class,fixture.name)).isEqualTo(1);
         }
     }
